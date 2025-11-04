@@ -1,3 +1,12 @@
+name: Fetch Gmail Leads
+
+on:
+  schedule:
+    # This runs the script every 12 hours
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+    # This adds a manual "Run" button on the Actions tab
+
 jobs:
   run-script:
     runs-on: ubuntu-latest
