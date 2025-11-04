@@ -23,10 +23,10 @@ jobs:
       - name: 3. Install the dependencies
         run: npm install
 
-      - name: 4. Create the secret files (Safer Method)
+      - name: 4. Decode secret files from Base64
         run: |
-          printf "%s" "${{ secrets.CREDENTIALS_JSON }}" > credentials.json
-          printf "%s" "${{ secrets.TOKEN_JSON }}" > token.json
+          echo "${{ secrets.CREDENTIALS_BASE64 }}" | base64 --decode > credentials.json
+          echo "${{ secrets.TOKEN_BASE64 }}" | base64 --decode > token.json
         shell: bash
 
       - name: 5. Run the lead fetcher script
