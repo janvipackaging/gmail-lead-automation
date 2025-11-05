@@ -1,19 +1,15 @@
 const {google} = require('googleapis');
-const cron = require('node-cron');
-const cheerio = require('cheerio'); // Import the HTML parser
+// const cron = require('node-cron'); // <-- REMOVED
+const cheerio = require('cheerio');
 const {authorize} = require('./authenticate');
 
 // --- 1. CONFIGURATION ---
 const SPREADSHEET_ID = '1Xo46YyTvM8CohicxGR2mVAvi94TLs8ab1eT9aMzWlMs'; 
-const SHEET_NAME = 'Sheet1'; // As you requested
-// ---------------------
+const SHEET_NAME = 'Sheet1';
 
-const MAX_CELL_CHARS = 49999; // Google's character limit for a cell
+const MAX_CELL_CHARS = 49999;
 
-/**
- * --- SAFETY FUNCTION ---
- * Truncates any string to be safely under Google's limit.
- */
+// --- SAFETY FUNCTION ---
 function truncateString(str) {
   if (str && str.length > MAX_CELL_CHARS) {
     console.warn(`Warning: Data was truncated.`);
@@ -21,7 +17,6 @@ function truncateString(str) {
   }
   return str;
 }
-
 
 /**
  * The main function to check for leads and process them.
@@ -47,7 +42,7 @@ async function checkAndFetchLeads() {
     const messages = listRes.data.messages;
     if (!messages || messages.length === 0) {
       console.log('No new leads found.');
-      return;
+      return; // Exit the function
     }
 
     console.log(`Found ${messages.length} new lead(s).`);
@@ -70,13 +65,12 @@ async function checkAndFetchLeads() {
         continue;
       }
 
-      // 6. Parse the HTML body (This function is updated)
+      // 6. Parse the HTML body
       const leadDetails = parseIndiaMartLead(emailHtmlBody);
       
       // Add the current date
       leadDetails.push(new Date().toLocaleString()); 
-      // leadDetails is now: [Name, Phone, Email, Product, ProcessedDate]
-
+      
       // 7. Write to Google Sheets
       await sheets.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
@@ -106,6 +100,8 @@ async function checkAndFetchLeads() {
     if (error.response && error.response.data) {
         console.error('Error details:', JSON.stringify(error.response.data, null, 2));
     }
+    // IMPORTANT: Exit with an error code if something fails
+    process.exit(1); 
   }
 }
 
@@ -129,8 +125,7 @@ function getEmailBody(message) {
 }
 
 /**
- * --- UPDATED FUNCTION ---
- * This function now has all "Requirement Details" logic REMOVED.
+ * Parses the HTML for lead details.
  */
 function parseIndiaMartLead(body) {
   // Load the HTML into cheerio
@@ -149,7 +144,7 @@ function parseIndiaMartLead(body) {
     email = contactDiv.find('a[href*="mailto:"]').text().trim();
 
   } else {
-    // --- Try Parsing Template 2 (The "Enquiry" format, like Bikesh's & Ganesh's) ---
+    // --- Try Parsing Template 2 (The "Enquiry" format) ---
     product = $('p:contains("I need") b, p:contains("I am looking for") b').text().trim();
     
     if (product) {
@@ -170,12 +165,12 @@ function parseIndiaMartLead(body) {
         console.warn('Unknown email template found. Parsing may be incomplete.');
         name = 'N/A';
         phone = $('a[href*="call+91-"]').first().text().trim();
-        email = $('a[href*="mailto:"]').first().text().trim(); 
+        email = $('a[href*="mailto:"]').text().trim(); 
         product = 'N/A';
     }
   }
   
-  // --- !!! UPDATED PHONE FORMATTING !!! ---
+  // --- PHONE FORMATTING ---
   if (phone && phone !== 'N/A') {
     phone = phone.replace(' (verified)', ''); // <-- THIS IS THE FIX
     phone = phone.replace(/-/g, ''); // Remove all dashes
@@ -186,7 +181,6 @@ function parseIndiaMartLead(body) {
 
   
   // --- FINAL SAFETY TRUNCATION & RETURN ---
-  // Return only the 4 items you want.
   return [
     truncateString(name || 'N/A'),
     truncateString(phone || 'N/A'),
@@ -196,9 +190,8 @@ function parseIndiaMartLead(body) {
 }
 
 
-// --- 4. Scheduling ---
-console.log('Script started. Waiting for the next scheduled run...');
-cron.schedule('0 */12 * * *', checkAndFetchLeads);
-
-// Run it once immediately when the script starts
+// --- 4. SCRIPT EXECUTION ---
+// We removed cron. We just run the function one time.
+// The script will automatically exit after this is complete.
+console.log('Script started. Running checkAndFetchLeads() one time...');
 checkAndFetchLeads();
