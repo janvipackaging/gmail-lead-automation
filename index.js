@@ -1,11 +1,12 @@
 const {google} = require('googleapis');
-// const cron = require('node-cron'); // <-- REMOVED
 const cheerio = require('cheerio');
 const {authorize} = require('./authenticate');
+const fs = require('fs'); // Import the File System module
 
 // --- 1. CONFIGURATION ---
 const SPREADSHEET_ID = '1Xo46YyTvM8CohicxGR2mVAvi94TLs8ab1eT9aMzWlMs'; 
-const SHEET_NAME = 'Sheet1';
+const SHEET_NAME = 'Sheet1'; 
+const LAST_RUN_FILE = 'last_run.txt'; // File to store last execution timestamp
 
 const MAX_CELL_CHARS = 49999;
 
@@ -19,21 +20,69 @@ function truncateString(str) {
 }
 
 /**
+ * Reads the timestamp of the last successful run from a file.
+ * Defaults to 48 hours ago if the file doesn't exist.
+ */
+function getLastRunTime() {
+    try {
+        // If the last_run.txt file exists, read the stored ISO timestamp
+        if (fs.existsSync(LAST_RUN_FILE)) {
+            const lastRunTime = fs.readFileSync(LAST_RUN_FILE, 'utf8').trim();
+            const date = new Date(lastRunTime);
+            
+            // Gmail API search requires YYYY/MM/DD format for 'after:' query
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}/${month}/${day}`;
+        }
+    } catch (err) {
+        console.error("Error reading last_run.txt:", err);
+    }
+    // Fallback: If no file exists (first run), search for the last 48 hours to be safe
+    const fallbackDate = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const year = fallbackDate.getFullYear();
+    const month = String(fallbackDate.getMonth() + 1).padStart(2, '0');
+    const day = String(fallbackDate.getDate()).padStart(2, '0');
+    return `${year}/${month}/${day}`;
+}
+
+/**
+ * Saves the current time to the file for the next run.
+ */
+function saveCurrentRunTime() {
+    try {
+        // Save the current timestamp as a full ISO date string
+        const currentTime = new Date().toISOString();
+        fs.writeFileSync(LAST_RUN_FILE, currentTime);
+        console.log(`Updated last run time to ${currentTime}`);
+    } catch (err) {
+        console.error("Error writing last_run.txt:", err);
+    }
+}
+
+
+/**
  * The main function to check for leads and process them.
  */
 async function checkAndFetchLeads() {
   console.log(`[${new Date().toLocaleString()}] Running lead check...`);
   
   try {
-    // 1. Authorize
+    // 1. Determine last run time
+    const lastRunTime = getLastRunTime();
+    console.log(`Searching for emails AFTER ${lastRunTime}...`);
+    
+    // 2. Authorize
     const auth = await authorize();
     const gmail = google.gmail({version: 'v1', auth});
     const sheets = google.sheets({version: 'v4', auth});
 
-    // 2. Build the Gmail Query
-    const gmailQuery = 'from:indiamart subject:film after:2025/11/01 is:unread';
+    // 3. Build the Gmail Query: REMOVED 'is:unread' and added 'after:'
+    const gmailQuery = `from:indiamart subject:film after:${lastRunTime}`;
+    console.log(`Using Gmail Query: ${gmailQuery}`);
 
-    // 3. List messages that match the query
+    // 4. List messages that match the query
     const listRes = await gmail.users.messages.list({
       userId: 'me',
       q: gmailQuery,
@@ -41,8 +90,9 @@ async function checkAndFetchLeads() {
 
     const messages = listRes.data.messages;
     if (!messages || messages.length === 0) {
-      console.log('No new leads found.');
-      return; // Exit the function
+      console.log('No new leads found since last run.');
+      saveCurrentRunTime(); // Save current time even if no messages were found
+      return; 
     }
 
     console.log(`Found ${messages.length} new lead(s).`);
@@ -50,7 +100,7 @@ async function checkAndFetchLeads() {
     for (const message of messages) {
       const msgId = message.id;
 
-      // 4. Get the full email details
+      // 5. Get the full email details
       const msgRes = await gmail.users.messages.get({
         userId: 'me',
         id: msgId,
@@ -58,20 +108,20 @@ async function checkAndFetchLeads() {
 
       const emailData = msgRes.data;
       
-      // 5. Get the HTML Body
+      // 6. Get the HTML Body
       const emailHtmlBody = getEmailBody(emailData);
       if (!emailHtmlBody) {
         console.log(`Skipping message ${msgId}: No HTML body found.`);
         continue;
       }
 
-      // 6. Parse the HTML body
+      // 7. Parse the HTML body (This function is updated)
       const leadDetails = parseIndiaMartLead(emailHtmlBody);
       
       // Add the current date
       leadDetails.push(new Date().toLocaleString()); 
       
-      // 7. Write to Google Sheets
+      // 8. Write to Google Sheets
       await sheets.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
         range: `${SHEET_NAME}!A1`,
@@ -83,7 +133,7 @@ async function checkAndFetchLeads() {
 
       console.log(`Successfully added lead for "${leadDetails[0]}" to Sheet.`);
 
-      // 8. Mark the email as "Read"
+      // 9. Mark the email as "Read" (optional, but good for inbox hygiene)
       await gmail.users.messages.modify({
         userId: 'me',
         id: msgId,
@@ -94,13 +144,15 @@ async function checkAndFetchLeads() {
 
       console.log(`Marked message ${msgId} as read.`);
     }
+    
+    // Save the time *after* successfully processing all leads
+    saveCurrentRunTime();
 
   } catch (error) {
     console.error('Error processing leads:', error.message);
     if (error.response && error.response.data) {
         console.error('Error details:', JSON.stringify(error.response.data, null, 2));
     }
-    // IMPORTANT: Exit with an error code if something fails
     process.exit(1); 
   }
 }
@@ -111,7 +163,7 @@ async function checkAndFetchLeads() {
 function getEmailBody(message) {
   let htmlBody = '';
   const payload = message.payload;
-
+  
   if (payload.parts) {
     const part = payload.parts.find(p => p.mimeType === 'text/html');
     if (part && part.body.data) {
@@ -128,7 +180,6 @@ function getEmailBody(message) {
  * Parses the HTML for lead details.
  */
 function parseIndiaMartLead(body) {
-  // Load the HTML into cheerio
   const $ = cheerio.load(body);
 
   let name, phone, email, product;
@@ -165,17 +216,17 @@ function parseIndiaMartLead(body) {
         console.warn('Unknown email template found. Parsing may be incomplete.');
         name = 'N/A';
         phone = $('a[href*="call+91-"]').first().text().trim();
-        email = $('a[href*="mailto:"]').text().trim(); 
+        email = $('a[href*="mailto:"]').first().text().trim(); 
         product = 'N/A';
     }
   }
   
   // --- PHONE FORMATTING ---
   if (phone && phone !== 'N/A') {
-    phone = phone.replace(' (verified)', ''); // <-- THIS IS THE FIX
-    phone = phone.replace(/-/g, ''); // Remove all dashes
+    phone = phone.replace(' (verified)', ''); 
+    phone = phone.replace(/-/g, ''); 
     if (!phone.startsWith("'")) {
-      phone = "'" + phone; // Add leading apostrophe to force string format in Sheets
+      phone = "'" + phone; 
     }
   }
 
@@ -191,7 +242,5 @@ function parseIndiaMartLead(body) {
 
 
 // --- 4. SCRIPT EXECUTION ---
-// We removed cron. We just run the function one time.
-// The script will automatically exit after this is complete.
 console.log('Script started. Running checkAndFetchLeads() one time...');
 checkAndFetchLeads();
