@@ -9,13 +9,16 @@ on:
 jobs:
   run-script:
     runs-on: ubuntu-latest
+    
+    # --- THIS IS THE CRITICAL FIX: Grant WRITE permission to the token ---
+    permissions:
+      contents: write 
+    # ---------------------------------------------------------------------
 
     steps:
       - name: 1. Checkout your code (with history for push back)
         uses: actions/checkout@v4
         with:
-          # Required to commit changes back (saving the timestamp)
-          token: ${{ secrets.GITHUB_TOKEN }} 
           # Fetch all branches/tags/history for commit purposes
           fetch-depth: 0 
 
@@ -41,7 +44,9 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
+          
           # Check if the file exists and has changes before committing
+          # We use the GITHUB_TOKEN which now has WRITE permission
           if [ -f last_run.txt ] && git diff --quiet last_run.txt; then
             echo "Last run time not updated. Skipping commit."
           else
@@ -50,5 +55,4 @@ jobs:
             git push
           fi
         env:
-          # Use the token defined in step 1
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
