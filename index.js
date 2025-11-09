@@ -134,8 +134,25 @@ async function checkAndFetchLeads() {
       }
 
       // --- RUN THE ULTIMATE PARSER ---
-      const leadDetails = parseIndiaMartLead(emailHtmlBody, headers);
+      const leadDetails = parseIndiaMartLead(emailHtmlBody, headers); // [Name, Phone, Email, Product]
       
+      // --- !!! N/A PREVENTION CHECK (THE FIX) !!! ---
+      // If Name, Phone, AND Product are all N/A, it's a ghost email.
+      const isJunkEntry = (leadDetails[0] === 'N/A' && leadDetails[1] === 'N/A' && leadDetails[3] === 'N/A');
+      
+      if (isJunkEntry) {
+        console.warn(`Skipping message ${msgId}: Parser failed, all critical data was N/A. This is a ghost email.`);
+        // Mark as read to get it out of the inbox, but DO NOT log it to the sheet.
+        await gmail.users.messages.modify({
+          userId: 'me',
+          id: msgId,
+          resource: { removeLabelIds: ['UNREAD'] },
+        });
+        continue; // Stop processing this loop and go to the next email.
+      }
+      // --- END OF N/A PREVENTION CHECK ---
+
+      // --- If we are here, the lead is valid ---
       leadDetails.push(new Date().toLocaleString()); // Processed Date (Col E)
       leadDetails.push('New');                       // Lead Status (Col F)
       leadDetails.push('Yes');                       // Welcome Sent (Col G)
@@ -152,12 +169,7 @@ async function checkAndFetchLeads() {
         },
       });
 
-      // Log success *only if* data was found
-      if (leadDetails[0] !== 'N/A') {
-        console.log(`Successfully added unique lead for "${leadDetails[0]}" to Sheet.`);
-      } else {
-        console.warn(`Warning: Added lead ${uniqueMessageId} with N/A data. Parser failed.`);
-      }
+      console.log(`Successfully added unique lead for "${leadDetails[0]}" to Sheet.`);
 
       await gmail.users.messages.modify({
         userId: 'me',
@@ -210,7 +222,7 @@ function parseIndiaMartLead(body, headers) {
   // --- 1. HUNT FOR PRODUCT ---
   // Try Template 1 (Buy Lead)
   product = $('div[style*="font-size:18px"] strong').text().trim();
-  if (!product || product === '') {
+  if (!product) {
     // Try Template 2 (Enquiry)
     product = $('p:contains("I need") b, p:contains("I am looking for") b').text().trim();
   }
