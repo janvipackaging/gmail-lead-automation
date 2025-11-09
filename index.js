@@ -137,11 +137,11 @@ async function checkAndFetchLeads() {
       const leadDetails = parseIndiaMartLead(emailHtmlBody, headers); // [Name, Phone, Email, Product]
       
       // --- !!! N/A PREVENTION CHECK (THE FIX) !!! ---
-      // If Name, Phone, AND Product are all N/A, it's a ghost email.
-      const isJunkEntry = (leadDetails[0] === 'N/A' && leadDetails[1] === 'N/A' && leadDetails[3] === 'N/A');
+      // If Name AND Phone are N/A, it's a ghost email.
+      const isJunkEntry = (leadDetails[0] === 'N/A' && leadDetails[1] === 'N/A');
       
       if (isJunkEntry) {
-        console.warn(`Skipping message ${msgId}: Parser failed, all critical data was N/A. This is a ghost email.`);
+        console.warn(`Skipping message ${msgId}: Parser failed, Name and Phone were N/A. This is a ghost email.`);
         // Mark as read to get it out of the inbox, but DO NOT log it to the sheet.
         await gmail.users.messages.modify({
           userId: 'me',
