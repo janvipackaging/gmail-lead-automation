@@ -235,14 +235,17 @@ function parseIndiaMartLead(body, headers) {
   // Phone: Find the link that has 'call+91-' in its href (MOST RELIABLE CONTACT)
   phone = $('a[href*="call+91-"]').first().text().trim();
   
-  // Email: Use the visible email link inside the HTML body (CRITICAL FIX)
-  const htmlEmailLink = $('a[href*="mailto:"]').first().text().trim();
-  // Check if the link exists AND is NOT the generic indiamart address
+  // *** CRITICAL FIX: Extract primary email from HTML body ***
+  // Find all mailto links in the contact details div and take the non-generic one.
+  const contactDiv = $('div[style*="color:#000000;line-height:1.5em;"]').first();
+  const htmlEmailLink = contactDiv.find('a[href*="mailto:"]').first().text().trim();
+  
   if (htmlEmailLink && htmlEmailLink !== 'N/A' && htmlEmailLink !== 'buyleads@indiamart.com') {
       email = htmlEmailLink;
   }
+  // --- END CRITICAL FIX ---
   
-  // Name: Use the Reply-To header first, as it's cleaner
+  // Name: Use the Reply-To header first for name, as it's cleaner
   const replyToHeader = headers.find(h => h.name.toLowerCase() === 'reply-to');
   if (replyToHeader) {
     // Extracts "Name <email@example.com>"
@@ -251,7 +254,7 @@ function parseIndiaMartLead(body, headers) {
       // Prioritize the name from the header, as it's often the cleanest
       name = match[1].trim() || 'N/A';
       
-      // If the HTML email was N/A, use the less reliable email from the header (the tracking email) as a last resort
+      // Secondary fallback for email: If the HTML extraction failed, use the less reliable email from the header (the tracking email) as a last resort
       if (email === 'N/A') {
           email = match[2].trim() || 'N/A';
       }
@@ -261,7 +264,7 @@ function parseIndiaMartLead(body, headers) {
   // --- 3. FALLBACK FOR NAME (If headers failed or were generic) ---
   if (name === 'N/A' || name === '') {
     // Fallback A: Try to find name near the address (Template 1 structure: the first text node)
-    name = $('div[style*="color:#000000;line-height:1.5em;"]').first().contents().first().text().trim() || 'N/A';
+    name = contactDiv.contents().first().text().trim() || 'N/A';
     
     // Fallback B: If still N/A, try to get name from the paragraph block (Template 2 structure)
     if (name === 'N/A' || name === '') {
@@ -288,7 +291,6 @@ function parseIndiaMartLead(body, headers) {
     truncateString(product || 'N/A'),
   ];
 }
-
 
 // --- 4. SCRIPT EXECUTION ---
 console.log('Script started. Running checkAndFetchLeads() one time...');
