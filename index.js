@@ -1,12 +1,13 @@
 const {google} = require('googleapis');
 const cheerio = require('cheerio');
 const {authorize} = require('./authenticate');
-const fs = require('fs');
+const fs = require('fs'); // Import the File System module
 
 // --- 1. CONFIGURATION ---
 const SPREADSHEET_ID = '1Xo46YyTvM8CohicxGR2mVAvi94TLs8ab1eT9aMzWlMs'; 
 const SHEET_NAME = 'Sheet1'; 
-const LAST_RUN_FILE = 'last_run.txt'; 
+const LAST_RUN_FILE = 'last_run.txt'; // File to store last execution timestamp
+
 const MAX_CELL_CHARS = 49999;
 const UNIQUE_ID_COLUMN_INDEX = 10; // Column J is the 10th column (1-indexed)
 
@@ -73,7 +74,6 @@ async function getExistingMessageIds(sheets, spreadsheetId, sheetName) {
         return new Set((response.data.values || []).flat().filter(id => id && id !== 'Unique Message ID'));
     } catch (error) {
         console.error("Error fetching existing IDs:", error.message);
-        // If it fails, assume no duplicates exist to avoid blocking the job
         return new Set(); 
     }
 }
@@ -123,7 +123,7 @@ async function checkAndFetchLeads() {
       const msgRes = await gmail.users.messages.get({
         userId: 'me',
         id: msgId,
-        format: 'FULL' 
+        format: 'FULL' // Must be FULL to get headers needed for ID and Reply-To
       });
 
       const emailData = msgRes.data;
@@ -146,8 +146,8 @@ async function checkAndFetchLeads() {
         continue;
       }
 
-      // 7. Parse the HTML body
-      const leadDetails = parseIndiaMartLead(emailHtmlBody);
+      // 7. Parse the HTML body and headers
+      const leadDetails = parseIndiaMartLead(emailHtmlBody, headers);
       
       // Prepare the row: [Name, Phone, Email, Product, Date, Unique Message ID]
       leadDetails.push(new Date().toLocaleString()); // Processed Date (Col E)
@@ -211,51 +211,55 @@ function getEmailBody(message) {
 }
 
 /**
- * Parses the HTML for lead details.
+ * Parses the HTML for lead details, using a robust strategy against template changes.
  */
-function parseIndiaMartLead(body) {
+function parseIndiaMartLead(body, headers) {
   const $ = cheerio.load(body);
 
-  let name, phone, email, product;
+  let name = 'N/A', phone = 'N/A', email = 'N/A', product = 'N/A';
 
-  // --- Try Parsing Template 1 (The "Buylead" format) ---
+  // --- 1. FIND PRODUCT FIRST (Defines which template we are using) ---
+  
+  // Method 1 (Template 1): Find Product based on the 18px font size strong tag (Buy Lead)
   product = $('div[style*="font-size:18px"] strong').text().trim();
   
-  if (product) {
-    // IT IS TEMPLATE 1
-    const contactDiv = $('div[style*="color:#000000;line-height:1.5em;"]').first();
-    name = contactDiv.contents().first().text().trim();
-    phone = contactDiv.find('a[href*="call+91-"]').text().trim();
-    email = contactDiv.find('a[href*="mailto:"]').text().trim();
-
-  } else {
-    // --- Try Parsing Template 2 (The "Enquiry" format) ---
+  if (!product || product === '') {
+    // Method 2 (Template 2): Find Product based on the Bold tag near "I need" or "I am looking for" (Enquiry)
     product = $('p:contains("I need") b, p:contains("I am looking for") b').text().trim();
-    
-    if (product) {
-        // IT IS TEMPLATE 2
-        const phoneSpan = $('span:contains("Click to call:")');
-        phone = phoneSpan.find('a[href*="call+91-"]').first().text().trim();
-        name = phoneSpan.closest('tr').prev().prev().find('span').first().text().trim();
-        
-        const emailSpans = $('span:contains("Email:")').find('a[href*="mailto:"]');
-        const emails = [];
-        emailSpans.each((i, el) => {
-            emails.push($(el).text().trim());
-        });
-        email = emails.join(', ');
-
-    } else {
-        // --- UNKNOWN TEMPLATE ---
-        console.warn('Unknown email template found. Parsing may be incomplete.');
-        name = 'N/A';
-        phone = $('a[href*="call+91-"]').first().text().trim();
-        email = $('a[href*="mailto:"]').first().text().trim(); 
-        product = 'N/A';
+    if (!product || product === '') {
+      product = 'N/A';
     }
   }
+
+  // --- 2. UNIVERSAL CONTACT EXTRACTION (Works across all templates) ---
   
-  // --- PHONE FORMATTING ---
+  // Phone: Find the link that has 'call+91-' in its href (MOST RELIABLE CONTACT)
+  phone = $('a[href*="call+91-"]').first().text().trim();
+  
+  // Email: Use the Reply-To header first, as it's cleaner and highly reliable
+  const replyToHeader = headers.find(h => h.name.toLowerCase() === 'reply-to');
+  if (replyToHeader) {
+    // Extracts "Name <email@example.com>"
+    const match = replyToHeader.value.match(/(.+)\s<(.+)>/);
+    if (match) {
+      name = match[1].trim() || 'N/A';
+      email = match[2].trim() || 'N/A';
+    }
+  }
+
+  // --- 3. FALLBACK FOR NAME (If headers failed or only provided email/phone) ---
+  if (name === 'N/A' || name === '') {
+    // Fallback A: Try to find name near the address (Template 1 structure)
+    name = $('div[style*="color:#000000;line-height:1.5em;"]').first().contents().first().text().trim() || 'N/A';
+    
+    // Fallback B: If still N/A, try to get name from the paragraph block (Template 2 structure)
+    if (name === 'N/A' || name === '') {
+      const phoneSpan = $('span:contains("Click to call:")');
+      name = phoneSpan.closest('tr').prev().prev().find('span').first().text().trim() || 'N/A';
+    }
+  }
+
+  // --- 4. PHONE FORMATTING ---
   if (phone && phone !== 'N/A') {
     phone = phone.replace(' (verified)', ''); 
     phone = phone.replace(/-/g, ''); 
@@ -263,7 +267,6 @@ function parseIndiaMartLead(body) {
       phone = "'" + phone; 
     }
   }
-
   
   // --- FINAL SAFETY TRUNCATION & RETURN ---
   // Returns: [Name, Phone, Email, Product]
