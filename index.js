@@ -1,13 +1,12 @@
 const {google} = require('googleapis');
 const cheerio = require('cheerio');
 const {authorize} = require('./authenticate');
-const fs = require('fs'); // Import the File System module
+const fs = require('fs');
 
 // --- 1. CONFIGURATION ---
 const SPREADSHEET_ID = '1Xo46YyTvM8CohicxGR2mVAvi94TLs8ab1eT9aMzWlMs'; 
 const SHEET_NAME = 'Sheet1'; 
-const LAST_RUN_FILE = 'last_run.txt'; // File to store last execution timestamp
-
+const LAST_RUN_FILE = 'last_run.txt'; 
 const MAX_CELL_CHARS = 49999;
 
 // --- SAFETY FUNCTION ---
@@ -28,7 +27,6 @@ function getLastRunTime() {
             const lastRunTime = fs.readFileSync(LAST_RUN_FILE, 'utf8').trim();
             const date = new Date(lastRunTime);
             
-            // Gmail API search requires YYYY/MM/DD format for 'after:' query
             const year = date.getFullYear();
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const day = String(date.getDate()).padStart(2, '0');
@@ -69,7 +67,6 @@ async function getExistingMessageIds(sheets, spreadsheetId, sheetName) {
             range: range,
         });
         
-        // Flatten the array of arrays and filter out empty cells/header
         return new Set((response.data.values || []).flat().filter(id => id && id !== 'Unique Message ID'));
     } catch (error) {
         console.error("Error fetching existing IDs:", error.message);
@@ -87,20 +84,16 @@ async function checkAndFetchLeads() {
   try {
     const lastRunTime = getLastRunTime();
     
-    // 1. Authorize
     const auth = await authorize();
     const gmail = google.gmail({version: 'v1', auth});
     const sheets = google.sheets({version: 'v4', auth});
     
-    // 2. Fetch existing IDs from the sheet
     const existingIds = await getExistingMessageIds(sheets, SPREADSHEET_ID, SHEET_NAME);
     console.log(`Found ${existingIds.size} existing unique Message IDs in the sheet.`);
 
-    // 3. Build the Gmail Query: ADDED 'in:inbox' to restrict search to current mailbox
     const gmailQuery = `from:indiamart subject:film after:${lastRunTime} in:inbox`;
     console.log(`Using Gmail Query: ${gmailQuery}`);
 
-    // 4. List messages
     const listRes = await gmail.users.messages.list({
       userId: 'me',
       q: gmailQuery,
@@ -118,37 +111,31 @@ async function checkAndFetchLeads() {
     for (const message of messages) {
       const msgId = message.id;
 
-      // 5. Get the full email details (including headers)
       const msgRes = await gmail.users.messages.get({
         userId: 'me',
         id: msgId,
-        format: 'FULL' // Must be FULL to get headers needed for ID and Reply-To
+        format: 'FULL' 
       });
 
       const emailData = msgRes.data;
-      
-      // Find the message-ID in the headers
       const headers = emailData.payload.headers;
       const uniqueMessageIdHeader = headers.find(h => h.name.toLowerCase() === 'message-id');
       const uniqueMessageId = uniqueMessageIdHeader ? uniqueMessageIdHeader.value : null;
 
-      // --- CRITICAL DUPLICATE CHECK ---
       if (uniqueMessageId && existingIds.has(uniqueMessageId)) {
           console.log(`Skipping message ${msgId}: Duplicate entry found for Message-ID: ${uniqueMessageId}`);
-          continue; // Skip to the next message
+          continue; 
       }
 
-      // 6. Get the HTML Body
       const emailHtmlBody = getEmailBody(emailData);
       if (!emailHtmlBody) {
         console.log(`Skipping message ${msgId}: No HTML body found.`);
         continue;
       }
 
-      // 7. Parse the HTML body and headers
+      // --- RUN THE ULTIMATE PARSER ---
       const leadDetails = parseIndiaMartLead(emailHtmlBody, headers);
       
-      // Prepare the row: [Name, Phone, Email, Product, Date, Unique Message ID]
       leadDetails.push(new Date().toLocaleString()); // Processed Date (Col E)
       leadDetails.push('New');                       // Lead Status (Col F)
       leadDetails.push('Yes');                       // Welcome Sent (Col G)
@@ -156,7 +143,6 @@ async function checkAndFetchLeads() {
       leadDetails.push('');                          // Order Confirmed Sent (Col I)
       leadDetails.push(uniqueMessageId || msgId);    // Unique Message ID (Col J) 
       
-      // 8. Write to Google Sheets
       await sheets.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
         range: `${SHEET_NAME}!A1`,
@@ -166,9 +152,13 @@ async function checkAndFetchLeads() {
         },
       });
 
-      console.log(`Successfully added unique lead for "${leadDetails[0]}" to Sheet.`);
+      // Log success *only if* data was found
+      if (leadDetails[0] !== 'N/A') {
+        console.log(`Successfully added unique lead for "${leadDetails[0]}" to Sheet.`);
+      } else {
+        console.warn(`Warning: Added lead ${uniqueMessageId} with N/A data. Parser failed.`);
+      }
 
-      // 9. Mark the email as "Read" 
       await gmail.users.messages.modify({
         userId: 'me',
         id: msgId,
@@ -178,7 +168,6 @@ async function checkAndFetchLeads() {
       });
     }
     
-    // Save the time *after* successfully processing all leads
     saveCurrentRunTime();
 
   } catch (error) {
@@ -210,87 +199,98 @@ function getEmailBody(message) {
 }
 
 /**
- * Parses the HTML for lead details, using a robust strategy against template changes.
+ * --- THE ULTIMATE PARSER (v3) ---
+ * This function now hunts for data across all known templates.
  */
 function parseIndiaMartLead(body, headers) {
   const $ = cheerio.load(body);
 
   let name = 'N/A', phone = 'N/A', email = 'N/A', product = 'N/A';
 
-  // --- 1. FIND PRODUCT FIRST (Defines which template we are using) ---
-  
-  // Method 1 (Template 1): Find Product based on the 18px font size strong tag (Buy Lead)
+  // --- 1. HUNT FOR PRODUCT ---
+  // Try Template 1 (Buy Lead)
   product = $('div[style*="font-size:18px"] strong').text().trim();
-  
   if (!product || product === '') {
-    // Method 2 (Template 2): Find Product based on the Bold tag near "I need" or "I am looking for" (Enquiry)
+    // Try Template 2 (Enquiry)
     product = $('p:contains("I need") b, p:contains("I am looking for") b').text().trim();
-    if (!product || product === '') {
-      product = 'N/A';
-    }
   }
 
-  // --- 2. UNIVERSAL CONTACT EXTRACTION (Works across all templates) ---
-  
-  // Phone: Find the link that has 'call+91-' in its href (MOST RELIABLE CONTACT)
+  // --- 2. HUNT FOR PHONE (Universal) ---
+  // This is the most reliable piece of data
   phone = $('a[href*="call+91-"]').first().text().trim();
-  
-  // *** CRITICAL FIX: Extract primary email from HTML body ***
-  // Find all mailto links in the contact details div and take the non-generic one.
-  const contactDiv = $('div[style*="color:#000000;line-height:1.5em;"]').first();
-  const htmlEmailLink = contactDiv.find('a[href*="mailto:"]').first().text().trim();
-  
-  if (htmlEmailLink && htmlEmailLink !== 'N/A' && htmlEmailLink !== 'buyleads@indiamart.com') {
-      email = htmlEmailLink;
+  if (phone.includes('(verified)')) {
+      phone = phone.split(' (verified)')[0].trim();
   }
-  // --- END CRITICAL FIX ---
-  
-  // Name: Use the Reply-To header first for name, as it's cleaner
+
+  // --- 3. HUNT FOR NAME ---
   const replyToHeader = headers.find(h => h.name.toLowerCase() === 'reply-to');
   if (replyToHeader) {
-    // Extracts "Name <email@example.com>"
+    // Try Reply-To header first (cleanest source)
     const match = replyToHeader.value.match(/(.+)\s<(.+)>/);
     if (match) {
-      // Prioritize the name from the header, as it's often the cleanest
-      name = match[1].trim() || 'N/A';
-      
-      // Secondary fallback for email: If the HTML extraction failed, use the less reliable email from the header (the tracking email) as a last resort
-      if (email === 'N/A') {
-          email = match[2].trim() || 'N/A';
-      }
+      name = match[1].trim();
     }
   }
+  
+  // If Reply-To fails, try Template 1 HTML structure
+  const buyLeadContactDiv = $('div[style*="color:#000000;line-height:1.5em;"]').first();
+  if (!name || name === 'N/A' || name.toLowerCase() === 'indiamart') {
+    name = buyLeadContactDiv.contents().first().text().trim();
+  }
 
-  // --- 3. FALLBACK FOR NAME (If headers failed or were generic) ---
-  if (name === 'N/A' || name === '') {
-    // Fallback A: Try to find name near the address (Template 1 structure: the first text node)
-    name = contactDiv.contents().first().text().trim() || 'N/A';
-    
-    // Fallback B: If still N/A, try to get name from the paragraph block (Template 2 structure)
-    if (name === 'N/A' || name === '') {
+  // If that fails, try Template 2 HTML structure
+  if (!name || name === 'N/A' || name.toLowerCase() === 'indiamart') {
       const phoneSpan = $('span:contains("Click to call:")');
-      name = phoneSpan.closest('tr').prev().prev().find('span').first().text().trim() || 'N/A';
-    }
+      name = phoneSpan.closest('tr').prev().prev().find('span').first().text().trim();
   }
 
-  // --- 4. PHONE FORMATTING ---
+  // --- 4. HUNT FOR EMAIL (The most difficult) ---
+  // Try Template 1 (Buy Lead) HTML link first
+  let htmlEmail = buyLeadContactDiv.find('a[href*="mailto:"]').first().text().trim();
+
+  if (htmlEmail && htmlEmail !== 'buyleads@indiamart.com' && !htmlEmail.includes('@reply.indiamart.com')) {
+    email = htmlEmail;
+  } else {
+    // Try Template 2 (Enquiry) HTML link
+    htmlEmail = $('span:contains("Email:")').find('a[href*="mailto:"]').first().text().trim();
+    if (htmlEmail && htmlEmail !== 'buyleads@indiamart.com' && !htmlEmail.includes('@reply.indiamart.com')) {
+      // Clean up the "(verified)" text
+      if (htmlEmail.includes('(verified)')) {
+          htmlEmail = htmlEmail.split(' (verified)')[0].trim();
+      }
+      email = htmlEmail;
+    }
+  }
+  
+  // If email is STILL N/A or a tracking email, set it to N/A
+  if (email.includes('@reply.indiamart.com') || email === 'buyleads@indiamart.com') {
+      email = 'N/A';
+  }
+
+  // --- 5. FINAL FORMATTING ---
   if (phone && phone !== 'N/A') {
-    phone = phone.replace(' (verified)', ''); 
     phone = phone.replace(/-/g, ''); 
     if (!phone.startsWith("'")) {
       phone = "'" + phone; 
     }
   }
-  
-  // --- FINAL SAFETY TRUNCATION & RETURN ---
-  // Returns: [Name, Phone, Email, Product]
+
+  // Final cleanup for Name
+  if (!name || name.toLowerCase() === 'indiamart' || name === 'Dear User') {
+      name = 'N/A';
+  }
+  if (!product) {
+      product = 'N/A';
+  }
+
   return [
-    truncateString(name || 'N/A'),
-    truncateString(phone || 'N/A'),
-    truncateString(email || 'N/A'),
-    truncateString(product || 'N/A'),
+    truncateString(name),
+    truncateString(phone),
+    truncateString(email),
+    truncateString(product),
   ];
 }
+
 
 // --- 4. SCRIPT EXECUTION ---
 console.log('Script started. Running checkAndFetchLeads() one time...');
