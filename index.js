@@ -211,24 +211,22 @@ function getEmailBody(message) {
 }
 
 /**
- * --- THE ULTIMATE PARSER (v3) ---
- * This function now hunts for data across all known templates.
+ * --- THE ULTIMATE PARSER (v3.1) ---
+ * This version explicitly returns "N/A" for empty fields to ensure the
+ * N/A Prevention Check works correctly.
  */
 function parseIndiaMartLead(body, headers) {
   const $ = cheerio.load(body);
 
-  let name = 'N/A', phone = 'N/A', email = 'N/A', product = 'N/A';
+  let name = '', phone = '', email = '', product = '';
 
   // --- 1. HUNT FOR PRODUCT ---
-  // Try Template 1 (Buy Lead)
   product = $('div[style*="font-size:18px"] strong').text().trim();
   if (!product) {
-    // Try Template 2 (Enquiry)
     product = $('p:contains("I need") b, p:contains("I am looking for") b').text().trim();
   }
 
   // --- 2. HUNT FOR PHONE (Universal) ---
-  // This is the most reliable piece of data
   phone = $('a[href*="call+91-"]').first().text().trim();
   if (phone.includes('(verified)')) {
       phone = phone.split(' (verified)')[0].trim();
@@ -237,36 +235,30 @@ function parseIndiaMartLead(body, headers) {
   // --- 3. HUNT FOR NAME ---
   const replyToHeader = headers.find(h => h.name.toLowerCase() === 'reply-to');
   if (replyToHeader) {
-    // Try Reply-To header first (cleanest source)
     const match = replyToHeader.value.match(/(.+)\s<(.+)>/);
     if (match) {
       name = match[1].trim();
     }
   }
   
-  // If Reply-To fails, try Template 1 HTML structure
   const buyLeadContactDiv = $('div[style*="color:#000000;line-height:1.5em;"]').first();
   if (!name || name === 'N/A' || name.toLowerCase() === 'indiamart') {
     name = buyLeadContactDiv.contents().first().text().trim();
   }
 
-  // If that fails, try Template 2 HTML structure
   if (!name || name === 'N/A' || name.toLowerCase() === 'indiamart') {
       const phoneSpan = $('span:contains("Click to call:")');
       name = phoneSpan.closest('tr').prev().prev().find('span').first().text().trim();
   }
 
-  // --- 4. HUNT FOR EMAIL (The most difficult) ---
-  // Try Template 1 (Buy Lead) HTML link first
+  // --- 4. HUNT FOR EMAIL ---
   let htmlEmail = buyLeadContactDiv.find('a[href*="mailto:"]').first().text().trim();
 
   if (htmlEmail && htmlEmail !== 'buyleads@indiamart.com' && !htmlEmail.includes('@reply.indiamart.com')) {
     email = htmlEmail;
   } else {
-    // Try Template 2 (Enquiry) HTML link
     htmlEmail = $('span:contains("Email:")').find('a[href*="mailto:"]').first().text().trim();
     if (htmlEmail && htmlEmail !== 'buyleads@indiamart.com' && !htmlEmail.includes('@reply.indiamart.com')) {
-      // Clean up the "(verified)" text
       if (htmlEmail.includes('(verified)')) {
           htmlEmail = htmlEmail.split(' (verified)')[0].trim();
       }
@@ -274,25 +266,24 @@ function parseIndiaMartLead(body, headers) {
     }
   }
   
-  // If email is STILL N/A or a tracking email, set it to N/A
   if (email.includes('@reply.indiamart.com') || email === 'buyleads@indiamart.com') {
       email = 'N/A';
   }
 
-  // --- 5. FINAL FORMATTING ---
-  if (phone && phone !== 'N/A') {
+  // --- 5. FINAL FORMATTING & N/A ASSIGNMENT ---
+  
+  // This is the critical fix. We ensure empty strings become "N/A".
+  name = (name && name.toLowerCase() !== 'indiamart' && name !== 'Dear User') ? name : 'N/A';
+  phone = (phone) ? phone : 'N/A';
+  email = (email) ? email : 'N/A';
+  product = (product) ? product : 'N/A';
+  
+  // Format phone if it's valid
+  if (phone !== 'N/A') {
     phone = phone.replace(/-/g, ''); 
     if (!phone.startsWith("'")) {
       phone = "'" + phone; 
     }
-  }
-
-  // Final cleanup for Name
-  if (!name || name.toLowerCase() === 'indiamart' || name === 'Dear User') {
-      name = 'N/A';
-  }
-  if (!product) {
-      product = 'N/A';
   }
 
   return [

@@ -10,16 +10,14 @@ jobs:
   run-script:
     runs-on: ubuntu-latest
     
-    # --- THIS IS THE CRITICAL FIX: Grant WRITE permission to the token ---
+    # Grant WRITE permission to the token for saving the timestamp
     permissions:
       contents: write 
-    # ---------------------------------------------------------------------
 
     steps:
       - name: 1. Checkout your code (with history for push back)
         uses: actions/checkout@v4
         with:
-          # Fetch all branches/tags/history for commit purposes
           fetch-depth: 0 
 
       - name: 2. Set up Node.js
@@ -40,19 +38,14 @@ jobs:
         id: fetch
         run: node index.js
 
-      - name: 6. Commit and Push new Last Run Time
+      - name: 6. Commit and Push new Last Run Time (FIXED)
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          
-          # Check if the file exists and has changes before committing
-          # We use the GITHUB_TOKEN which now has WRITE permission
-          if [ -f last_run.txt ] && git diff --quiet last_run.txt; then
-            echo "Last run time not updated. Skipping commit."
-          else
-            git add last_run.txt
-            git commit -m "chore(timestamp): update last run time" || echo "No changes to commit"
-            git push
-          fi
+          git add last_run.txt
+          # Force a commit. If there are no changes, this is harmless.
+          # This command will commit *only if* the file has changed.
+          git commit -m "chore(timestamp): update last run time" || echo "No changes to commit"
+          git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
