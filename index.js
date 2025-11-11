@@ -136,29 +136,29 @@ async function checkAndFetchLeads() {
       // --- RUN THE ULTIMATE PARSER ---
       const leadDetails = parseIndiaMartLead(emailHtmlBody, headers); // [Name, Phone, Email, Product]
       
-      // --- !!! N/A PREVENTION CHECK (THE FIX) !!! ---
-      // If Name AND Phone are N/A, it's a ghost email.
+      // --- N/A PREVENTION CHECK ---
       const isJunkEntry = (leadDetails[0] === 'N/A' && leadDetails[1] === 'N/A');
       
       if (isJunkEntry) {
         console.warn(`Skipping message ${msgId}: Parser failed, Name and Phone were N/A. This is a ghost email.`);
-        // Mark as read to get it out of the inbox, but DO NOT log it to the sheet.
         await gmail.users.messages.modify({
           userId: 'me',
           id: msgId,
           resource: { removeLabelIds: ['UNREAD'] },
         });
-        continue; // Stop processing this loop and go to the next email.
+        continue; 
       }
-      // --- END OF N/A PREVENTION CHECK ---
-
-      // --- If we are here, the lead is valid ---
+      
+      // --- *** THIS IS THE FIX *** ---
+      // We ONLY add the data fetched from the email.
+      // We leave columns F, G, H, I blank so the Apps Script can process them.
       leadDetails.push(new Date().toLocaleString()); // Processed Date (Col E)
-      leadDetails.push('New');                       // Lead Status (Col F)
-      leadDetails.push('Yes');                       // Welcome Sent (Col G)
-      leadDetails.push('');                          // Contacted Sent (Col H)
-      leadDetails.push('');                          // Order Confirmed Sent (Col I)
+      leadDetails.push('');                          // Lead Status (Col F) - LEAVE BLANK
+      leadDetails.push('');                          // Welcome Sent (Col G) - LEAVE BLANK
+      leadDetails.push('');                          // Contacted Sent (Col H) - LEAVE BLANK
+      leadDetails.push('');                          // Order Confirmed Sent (Col I) - LEAVE BLANK
       leadDetails.push(uniqueMessageId || msgId);    // Unique Message ID (Col J) 
+      // --- *** END OF FIX *** ---
       
       await sheets.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
@@ -184,7 +184,8 @@ async function checkAndFetchLeads() {
 
   } catch (error) {
     console.error('Error processing leads:', error.message);
-    if (error.response && error.response.data) {
+    // --- *** THIS IS THE SECOND FIX (typo) *** ---
+    if (error.response && error.response.data) { 
         console.error('Error details:', JSON.stringify(error.response.data, null, 2));
     }
     process.exit(1); 
@@ -212,8 +213,6 @@ function getEmailBody(message) {
 
 /**
  * --- THE ULTIMATE PARSER (v3.1) ---
- * This version explicitly returns "N/A" for empty fields to ensure the
- * N/A Prevention Check works correctly.
  */
 function parseIndiaMartLead(body, headers) {
   const $ = cheerio.load(body);
@@ -275,7 +274,7 @@ function parseIndiaMartLead(body, headers) {
   // This is the critical fix. We ensure empty strings become "N/A".
   name = (name && name.toLowerCase() !== 'indiamart' && name !== 'Dear User') ? name : 'N/A';
   phone = (phone) ? phone : 'N/A';
-  email = (email) ? email : 'N/A';
+  email = (email && email) ? email : 'N/A';
   product = (product) ? product : 'N/A';
   
   // Format phone if it's valid
